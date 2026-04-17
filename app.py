@@ -2,37 +2,40 @@ from langgraph.graph import StateGraph
 from dotenv import load_dotenv
 import os
 from openai import AzureOpenAI
-from graphviz import Digraph
 
-# -------------------------------
-# LOAD ENV
-# -------------------------------
+# Load environment variables
 load_dotenv()
 
+# Azure OpenAI client (UPDATED)
 client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_version="2024-02-15-preview"
+    api_version="2024-02-01"
 )
 
 DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
 # -------------------------------
-# STATE (Shared Memory)
+# STATE (Graph Memory)
 # -------------------------------
-class State(dict):
-    pass
+from typing import TypedDict
+
+class State(TypedDict, total=False):
+    input: str
+    issue: str
+    action: str
+    output: str
 
 # -------------------------------
-# NODE 1: ANALYZE (LLM + Routing)
+# NODE 1: ANALYZE USER INPUT
 # -------------------------------
 def analyze(state):
-    user_input = state["input"]
+    user_input = state.get("input", "")
 
     response = client.chat.completions.create(
         model=DEPLOYMENT,
         messages=[
-            {"role": "system", "content": "Classify issue as delay, payment, or other"},
+            {"role": "system", "content": "Classify issue as delay, payment or other"},
             {"role": "user", "content": user_input}
         ]
     )
@@ -40,69 +43,37 @@ def analyze(state):
     result = response.choices[0].message.content.lower()
 
     if "delay" in result:
-        state["route"] = "delay"
-        state["risk"] = "low"
+        issue = "delay"
     elif "payment" in result:
-        state["route"] = "payment"
-        state["risk"] = "medium"
+        issue = "payment"
     else:
-        state["route"] = "general"
-        state["risk"] = "high"
+        issue = "other"
 
-    print(f"Node1 (Analyze): route={state['route']}, risk={state['risk']}")
-    return state
+    print("Node1 (Analyze):", issue)
 
-# -------------------------------
-# NODE 2A: DELAY HANDLER
-# -------------------------------
-def delay_node(state):
-    state["result"] = "Handled delay: compensation initiated"
-    return state
+    return {**state, "issue": issue}
 
 # -------------------------------
-# NODE 2B: PAYMENT HANDLER
+# NODE 2A: DELAY
 # -------------------------------
-def payment_node(state):
-    state["result"] = "Handled payment: issue resolved"
-    return state
+def handle_delay(state):
+    print("Node2A: Delay handler")
+    return {**state, "action": "Provide compensation for delay"}
 
 # -------------------------------
-# NODE 2C: GENERAL (HIGH RISK)
+# NODE 2B: PAYMENT
 # -------------------------------
-def general_node(state):
-    state["result"] = "General issue detected"
-    return state
+def handle_payment(state):
+    print("Node2B: Payment handler")
+    return {**state, "action": "Resolve payment issue"}
 
 # -------------------------------
-# NODE 3: HUMAN APPROVAL
+# NODE 3: FINAL RESPONSE
 # -------------------------------
-def human_approval(state):
-    if state["risk"] == "high":
-        print("⚠️ High Risk Detected - Approval Required")
-        state["approved"] = False  # simulate rejection
-    else:
-        state["approved"] = True
-
-    return state
-
-# -------------------------------
-# NODE 4: RETRY LOGIC
-# -------------------------------
-def retry_node(state):
-    print("Retrying operation...")
-    for i in range(2):
-        print(f"Attempt {i+1}")
-
-    state["result"] = "Fallback after retries"
-    return state
-
-# -------------------------------
-# NODE 5: FINAL RESPONSE
-# -------------------------------
-def final_node(state):
-    output = f"Issue handled via {state.get('route')} | Result: {state.get('result')}"
-    print("Node Final:", output)
-    return {"output": output}
+def final_response(state):
+    output = f"Issue: {state.get('issue')} | Action: {state.get('action')}"
+    print("Node3 (Final):", output)
+    return {**state, "output": output}
 
 # -------------------------------
 # BUILD GRAPH
@@ -110,74 +81,58 @@ def final_node(state):
 builder = StateGraph(State)
 
 builder.add_node("analyze", analyze)
-builder.add_node("delay", delay_node)
-builder.add_node("payment", payment_node)
-builder.add_node("general", general_node)
-builder.add_node("approval", human_approval)
-builder.add_node("retry", retry_node)
-builder.add_node("final", final_node)
+builder.add_node("delay", handle_delay)
+builder.add_node("payment", handle_payment)
+builder.add_node("final", final_response)
 
-# Entry point
+# Entry
 builder.set_entry_point("analyze")
 
-# -------------------------------
-# ROUTING AFTER ANALYZE
-# -------------------------------
-def route_after_analyze(state):
-    return state["route"]
+# Conditional branching
+def route(state):
+    issue = state.get("issue")
 
-builder.add_conditional_edges("analyze", route_after_analyze)
+    if issue == "delay":
+        return "delay"
+    elif issue == "payment":
+        return "payment"
+    else:
+        return "final"
 
-# Connect handlers to approval
-builder.add_edge("delay", "approval")
-builder.add_edge("payment", "approval")
-builder.add_edge("general", "approval")
+builder.add_conditional_edges("analyze", route)
 
-# -------------------------------
-# APPROVAL ROUTING
-# -------------------------------
-def route_after_approval(state):
-    if not state.get("approved"):
-        return "retry"
-    return "final"
-
-builder.add_conditional_edges("approval", route_after_approval)
-
-# Retry goes to final
-builder.add_edge("retry", "final")
+# Connect nodes
+builder.add_edge("delay", "final")
+builder.add_edge("payment", "final")
 
 # Compile graph
 graph = builder.compile()
 
 # -------------------------------
-# RUN GRAPH
+# RUN
 # -------------------------------
-if __name__ == "__main__":
-    user_input = input("Enter your issue: ")
+result = graph.invoke({"input": "My order is delayed"})
 
-    result = graph.invoke({"input": user_input})
+print("\nFinal Output:", result["output"])
 
-    print("\n✅ Final Output:", result["output"])
 
-# -------------------------------
-# GRAPH VISUALIZATION
-# -------------------------------
+from graphviz import Digraph
+
 def visualize():
     dot = Digraph()
 
-    dot.edge("analyze", "delay")
-    dot.edge("analyze", "payment")
-    dot.edge("analyze", "general")
+    # Nodes
+    dot.node("analyze")
+    dot.node("delay")
+    dot.node("payment")
+    dot.node("final")
 
-    dot.edge("delay", "approval")
-    dot.edge("payment", "approval")
-    dot.edge("general", "approval")
+    # Edges
+    dot.edge("analyze", "delay", label="delay")
+    dot.edge("analyze", "payment", label="payment")
+    dot.edge("delay", "final")
+    dot.edge("payment", "final")
 
-    dot.edge("approval", "final")
-    dot.edge("approval", "retry")
-
-    dot.edge("retry", "final")
-
-    dot.render("workflow", format="png", cleanup=True)
+    dot.render("graph", format="png", cleanup=True)
 
 visualize()
