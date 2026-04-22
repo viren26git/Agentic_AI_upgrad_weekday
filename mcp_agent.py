@@ -8,11 +8,11 @@ load_dotenv()
 
 client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version="2024-05-01-preview",
+    api_version="2024-02-01",
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
 )
 
-DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
 # ------------------------
 # MCP STATE (STRUCTURED)
@@ -25,29 +25,37 @@ class MCPState(TypedDict, total=False):
     plan: str
     execution: str
     history: List[str]
+    result: str
 
 # ------------------------
 # AGENT 1: PLANNER
 # ------------------------
 
 def planner(state: MCPState):
-    prompt = f"""
-Task: {state['task']}
-Constraints: {state['constraints']}
+    print(" PLanner running !!!")
 
-Create a structured plan.
-"""
+    task= state.get("task","")
+    constraints= state.get("constraints",[])
 
-    res = client.chat.completions.create(
-        model=DEPLOYMENT,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    prompt= f"Task: {task} \n Constraints: {constraints}\n Create a plan"
+
+    try:
+
+        res = client.chat.completions.create(
+            model=DEPLOYMENT,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        plan = res.choices[0].message.content
+    
+    except Exception as e:
+        plan = f"Planner error :{str(e)}"
 
     history = state.get("history", [])
     history.append("Planner executed")
 
     return {
-        "plan": res.choices[0].message.content,
+        "plan": plan,
         "history": history
     }
 
@@ -79,21 +87,25 @@ Execute this plan:
 # ------------------------
 
 def final(state: MCPState):
-    return {
-        "result": f"""
-User: {state['user']}
-Task: {state['task']}
 
-Plan:
-{state['plan']}
+    print(" Final node is running !!")
 
-Execution:
-{state['execution']}
+    result = f"""
 
-History:
-{state['history']}
-"""
-    }
+    User: {state.get('user')}
+    Task: {state.get('task')}
+
+    Plan:
+    {state.get('plan')}
+
+    Execution:
+    {state.get('execution')}
+
+    History:
+    {state.get('history')}
+    """
+    
+    return {"result" : result}
 
 # ------------------------
 # GRAPH
@@ -117,13 +129,15 @@ graph = builder.compile()
 # RUN
 # ------------------------
 
-state = {
-    "task": "Build secure login system",
-    "user": "admin",
-    "constraints": ["secure", "fast"],
-    "history": []
-}
+if __name__ == "__main__":
 
-result = graph.invoke(state)
+    state = {
+        "task": "Build secure login system",
+        "user": "admin",
+        "constraints": ["secure", "fast"],
+        "history": []
+    }
 
-print(result["result"])
+    result = graph.invoke(state)
+    print("\n Final Output:\n")
+    print(result["result"])
