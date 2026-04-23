@@ -1,0 +1,84 @@
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
+from openai import AzureOpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version="2024-05-01",
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    timeout=10
+)
+
+DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+class State(TypedDict, total=False):
+    input: str
+    task_type: str
+    output: str
+
+# ------------------------
+# AGENT 1: TASK DECIDER
+# ------------------------
+
+def planner(state: State):
+    query = state["input"]
+
+    prompt = f"""
+Classify task:
+- math
+- text
+
+Query: {query}
+Reply ONLY one word.
+"""
+
+    res = client.chat.completions.create(
+        model=DEPLOYMENT,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return {"task_type": res.choices[0].message.content.lower()}
+
+# ------------------------
+# AGENT 2: WORKER
+# ------------------------
+
+def worker(state: State):
+    query = state["input"]
+    task = state["task_type"]
+
+    if "math" in task:
+        try:
+            result = str(eval(query))
+        except:
+            result = "Math error"
+    else:
+        result = "Processed text: " + query
+
+    return {"output": result}
+
+# ------------------------
+# GRAPH
+# ------------------------
+
+builder = StateGraph(State)
+
+builder.add_node("planner", planner)
+builder.add_node("worker", worker)
+
+builder.set_entry_point("planner")
+
+builder.add_edge("planner", "worker")
+builder.add_edge("worker", END)
+
+graph = builder.compile()
+
+# RUN
+state = {"input": "10 + 20"}
+result = graph.invoke(state)
+
+print("Final Output:", result["output"])
